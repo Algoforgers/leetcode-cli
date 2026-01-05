@@ -1,4 +1,5 @@
 import argparse
+import base64
 import json
 import os
 import re
@@ -421,6 +422,59 @@ def render_question(question: Dict[str, Any]) -> Tuple[str, str, str, str]:
     return header, meta, text, link
 
 
+def extract_image_urls(markdown: str) -> List[str]:
+    urls = []
+    for match in re.finditer(r"!\[[^\]]*\]\(([^)]+)\)", markdown):
+        url = match.group(1).strip()
+        if url:
+            urls.append(url)
+    return urls
+
+
+def can_inline_images() -> bool:
+    override = os.environ.get("LEETCLI_INLINE_IMAGES", "").strip().lower()
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return os.environ.get("TERM_PROGRAM") == "iTerm.app"
+
+
+def normalize_image_url(url: str) -> str:
+    if url.startswith("//"):
+        return "https:" + url
+    if url.startswith("/"):
+        return "https://leetcode.com" + url
+    return url
+
+
+def iterm2_image_escape(data: bytes, filename: str) -> str:
+    name = base64.b64encode(filename.encode("utf-8")).decode("ascii")
+    b64 = base64.b64encode(data).decode("ascii")
+    return f"\033]1337;File=inline=1;preserveAspectRatio=1;size={len(data)};name={name}:{b64}\a"
+
+
+def print_inline_images(urls: List[str]) -> None:
+    if not urls:
+        return
+    print()
+    print(dim("Images:"))
+    for url in urls:
+        normalized = normalize_image_url(url)
+        try:
+            req = urllib.request.Request(
+                normalized,
+                headers={"User-Agent": "leetcli/0.1"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            filename = normalized.rsplit("/", 1)[-1] or "image"
+            print(iterm2_image_escape(data, filename))
+        except urllib.error.URLError:
+            print(dim(normalized))
+
+
 def resolve_slug(query: str, items: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
     if is_number(query):
         item = find_by_id(items, query)
@@ -478,6 +532,9 @@ def cmd_get(args: argparse.Namespace) -> int:
         console.print(Markdown(text))
     else:
         print(text)
+    if can_inline_images():
+        urls = extract_image_urls(text)
+        print_inline_images(urls)
     print()
     print(blue(link))
     return 0

@@ -30,3 +30,4 @@ lc search "two sum"
 - Cache lives in `./.leetcli-cache` by default; set `LEETCLI_CACHE_DIR` to override.
 - Set `LEETCODE_SESSION` to access paid-only content.
 - Uses `rich` to render formatted content; images appear as links in the terminal.
+- iTerm2 inline images: set `LEETCLI_INLINE_IMAGES=1` (or auto-detected when `TERM_PROGRAM=iTerm.app`).
