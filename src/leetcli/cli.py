@@ -53,13 +53,22 @@ query question($titleSlug: String!) {
 """
 
 
-class HtmlToText(HTMLParser):
+try:
+    from rich.console import Console
+    from rich.markdown import Markdown
+except ImportError:  # pragma: no cover - optional at runtime
+    Console = None
+    Markdown = None
+
+
+class HtmlToMarkdown(HTMLParser):
     def __init__(self) -> None:
         super().__init__()
         self._chunks: List[str] = []
         self._in_pre = False
         self._pending_space = False
-        self._list_prefix = ""
+        self._link_href: Optional[str] = None
+        self._link_text: List[str] = []
 
     def handle_starttag(self, tag: str, attrs: List[Tuple[str, Optional[str]]]) -> None:
         if tag in {"p", "br"}:
@@ -67,22 +76,62 @@ class HtmlToText(HTMLParser):
         elif tag == "pre":
             self._newline()
             self._in_pre = True
+            self._append("```")
         elif tag == "code" and not self._in_pre:
             self._append("`")
+        elif tag in {"strong", "b"}:
+            self._append("**")
+        elif tag in {"em", "i"}:
+            self._append("*")
         elif tag in {"ul", "ol"}:
             self._newline()
         elif tag == "li":
             self._newline()
             self._append("- ")
+        elif tag == "a":
+            href = None
+            for key, value in attrs:
+                if key == "href":
+                    href = value
+                    break
+            self._link_href = href
+            self._link_text = []
+        elif tag == "img":
+            src = ""
+            alt = ""
+            for key, value in attrs:
+                if key == "src" and value:
+                    src = value
+                elif key == "alt" and value:
+                    alt = value
+            label = alt.strip() if alt else "image"
+            if src:
+                self._append(f"![{label}]({src})")
 
     def handle_endtag(self, tag: str) -> None:
         if tag == "pre":
             self._newline()
+            self._append("```")
+            self._newline()
             self._in_pre = False
         elif tag == "code" and not self._in_pre:
             self._append("`")
+        elif tag in {"strong", "b"}:
+            self._append("**")
+        elif tag in {"em", "i"}:
+            self._append("*")
         elif tag in {"p", "br"}:
             self._newline()
+        elif tag == "a":
+            text = "".join(self._link_text).strip()
+            href = self._link_href or ""
+            if href:
+                label = text or href
+                self._append(f"[{label}]({href})")
+            elif text:
+                self._append(text)
+            self._link_href = None
+            self._link_text = []
 
     def handle_data(self, data: str) -> None:
         if not data:
@@ -92,6 +141,9 @@ class HtmlToText(HTMLParser):
             return
         text = " ".join(data.split())
         if not text:
+            return
+        if self._link_href is not None:
+            self._link_text.append(text)
             return
         if self._pending_space:
             self._append(" ")
@@ -112,8 +164,8 @@ class HtmlToText(HTMLParser):
         return "".join(self._chunks).strip()
 
 
-def html_to_text(html: str) -> str:
-    parser = HtmlToText()
+def html_to_markdown(html: str) -> str:
+    parser = HtmlToMarkdown()
     parser.feed(html)
     return parser.get_text()
 
@@ -354,7 +406,7 @@ def render_search(matches: List[Dict[str, Any]], limit: int) -> str:
     return "\n".join(lines)
 
 
-def render_question(question: Dict[str, Any]) -> str:
+def render_question(question: Dict[str, Any]) -> Tuple[str, str, str, str]:
     frontend_id = question.get("questionFrontendId")
     title = question.get("title")
     difficulty = difficulty_color(question.get("difficulty", ""))
@@ -364,10 +416,9 @@ def render_question(question: Dict[str, Any]) -> str:
     if tags:
         meta = f"{meta}  {dim(tags)}"
     content = question.get("content") or ""
-    text = html_to_text(content)
+    text = html_to_markdown(content)
     link = f"https://leetcode.com/problems/{question.get('titleSlug')}/"
-    parts = [header, meta, "", text, "", blue(link)]
-    return "\n".join(part for part in parts if part is not None)
+    return header, meta, text, link
 
 
 def resolve_slug(query: str, items: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[List[Dict[str, Any]]]]:
@@ -418,7 +469,17 @@ def cmd_get(args: argparse.Namespace) -> int:
         return 1
     if question.get("isPaidOnly") and not question.get("content"):
         print(red("Paid-only problem. Set LEETCODE_SESSION to access full content."))
-    print(render_question(question))
+    header, meta, text, link = render_question(question)
+    print(header)
+    print(meta)
+    print()
+    if Console and Markdown:
+        console = Console()
+        console.print(Markdown(text))
+    else:
+        print(text)
+    print()
+    print(blue(link))
     return 0
 
 
