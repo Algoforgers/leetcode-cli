@@ -3,7 +3,10 @@ import base64
 import json
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -451,7 +454,10 @@ def normalize_image_url(url: str) -> str:
 def iterm2_image_escape(data: bytes, filename: str) -> str:
     name = base64.b64encode(filename.encode("utf-8")).decode("ascii")
     b64 = base64.b64encode(data).decode("ascii")
-    return f"\033]1337;File=inline=1;preserveAspectRatio=1;size={len(data)};name={name}:{b64}\a"
+    payload = f"\033]1337;File=inline=1;preserveAspectRatio=1;size={len(data)};name={name}:{b64}\a"
+    if os.environ.get("TMUX"):
+        return f"\033Ptmux;\033{payload}\033\\"
+    return payload
 
 
 def print_inline_images(urls: List[str]) -> None:
@@ -472,6 +478,84 @@ def print_inline_images(urls: List[str]) -> None:
             filename = normalized.rsplit("/", 1)[-1] or "image"
             print(iterm2_image_escape(data, filename))
         except urllib.error.URLError:
+            print(dim(normalized))
+
+
+def imgcat_available() -> bool:
+    return shutil.which("imgcat") is not None
+
+
+def mcat_available() -> bool:
+    return shutil.which("mcat") is not None
+
+
+def should_use_imgcat(force: bool) -> bool:
+    override = os.environ.get("LEETCLI_IMGCAT", "").strip().lower()
+    if force:
+        return True
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
+def should_use_mcat(force: bool) -> bool:
+    override = os.environ.get("LEETCLI_MCAT", "").strip().lower()
+    if force:
+        return True
+    if override in {"1", "true", "yes", "on"}:
+        return True
+    if override in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+
+def print_imgcat_images(urls: List[str]) -> None:
+    if not urls:
+        return
+    if not imgcat_available():
+        print(dim("imgcat not found in PATH."))
+        return
+    print()
+    print(dim("Images:"))
+    for url in urls:
+        normalized = normalize_image_url(url)
+        try:
+            req = urllib.request.Request(
+                normalized,
+                headers={"User-Agent": "leetcli/0.1"},
+                method="GET",
+            )
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = resp.read()
+            filename = normalized.rsplit("/", 1)[-1] or "image"
+            with tempfile.NamedTemporaryFile(
+                dir=cache_dir(), suffix=f"_{filename}", delete=False
+            ) as tmp:
+                tmp.write(data)
+                temp_path = tmp.name
+            try:
+                subprocess.run(["imgcat", temp_path], check=False)
+            finally:
+                Path(temp_path).unlink(missing_ok=True)
+        except urllib.error.URLError:
+            print(dim(normalized))
+
+
+def print_mcat_images(urls: List[str]) -> None:
+    if not urls:
+        return
+    if not mcat_available():
+        print(dim("mcat not found in PATH."))
+        return
+    print()
+    print(dim("Images:"))
+    for url in urls:
+        normalized = normalize_image_url(url)
+        try:
+            subprocess.run(["mcat", normalized], check=False)
+        except OSError:
             print(dim(normalized))
 
 
@@ -532,8 +616,20 @@ def cmd_get(args: argparse.Namespace) -> int:
         console.print(Markdown(text))
     else:
         print(text)
-    if can_inline_images():
-        urls = extract_image_urls(text)
+    urls = extract_image_urls(text)
+    if args.debug_images:
+        print(dim(f"Images found: {len(urls)}"))
+        for url in urls:
+            print(dim(f"- {url}"))
+        print(dim(f"mcat available: {mcat_available()}"))
+    if args.open_images and urls:
+        for url in urls:
+            webbrowser.open(normalize_image_url(url))
+    if should_use_mcat(args.mcat):
+        print_mcat_images(urls)
+    elif should_use_imgcat(args.imgcat):
+        print_imgcat_images(urls)
+    elif can_inline_images():
         print_inline_images(urls)
     print()
     print(blue(link))
@@ -572,6 +668,26 @@ def build_parser() -> argparse.ArgumentParser:
     get = subparsers.add_parser("get", help="Fetch a problem by id, title, or slug")
     get.add_argument("query", help="Problem id, title text, or slug")
     get.add_argument("--limit", type=int, default=10)
+    get.add_argument(
+        "--open-images",
+        action="store_true",
+        help="Open images in your default browser",
+    )
+    get.add_argument(
+        "--imgcat",
+        action="store_true",
+        help="Render images inline using imgcat (iTerm2)",
+    )
+    get.add_argument(
+        "--mcat",
+        action="store_true",
+        help="Render images inline using mcat",
+    )
+    get.add_argument(
+        "--debug-images",
+        action="store_true",
+        help="Print extracted image URLs and renderer availability",
+    )
     get.set_defaults(func=cmd_get)
 
     open_cmd = subparsers.add_parser("open", help="Open a problem in your browser")
